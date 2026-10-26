@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Hoca - Sesli QR Yoklama</title>
+<link rel="manifest" href="./manifest-lecturer.json">
+<meta name="theme-color" content="#16213e">
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, sans-serif;
+    background: linear-gradient(160deg, #1a1a2e, #16213e);
+    color: #fff; min-height: 100vh; padding: 16px;
+  }
+  h1 { font-size: 20px; margin: 0 0 8px; text-align: center; }
+  .card {
+    background: rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 16px; margin-bottom: 12px;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  label { display: block; font-size: 13px; margin-bottom: 6px; opacity: 0.9; }
+  select, input {
+    width: 100%; padding: 12px; border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.2);
+    background: rgba(0,0,0,0.3); color: #fff; font-size: 16px;
+  }
+  button {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    margin-top: 10px;
+  }
+  button:active { opacity: 0.7; }
+  .btn-primary { background: #4caf50; color: #fff; }
+  .btn-stop { background: #e94560; color: #fff; }
+  .btn-secondary { background: rgba(255,255,255,0.15); color: #fff; }
+  .big-code {
+    font-size: 56px; font-weight: 900; letter-spacing: 12px;
+    text-align: center; color: #4caf50; font-family: 'Courier New', monospace;
+    padding: 12px 0;
+  }
+  .code-sub { text-align: center; font-size: 12px; opacity: 0.7; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  #video {
+    width: 100%; border-radius: 12px; background: #000;
+    display: none; max-height: 300px; object-fit: cover;
+  }
+  #scanWrap { position: relative; margin-top: 12px; }
+  #studentInfo {
+    display: none; background: rgba(76,175,80,0.15);
+    border: 1px solid rgba(76,175,80,0.4);
+    border-radius: 12px; padding: 16px; margin-top: 12px;
+  }
+  #studentInfo img {
+    width: 90px; height: 90px; object-fit: cover;
+    border-radius: 12px; border: 2px solid #4caf50;
+    margin-right: 12px; background: #222;
+  }
+  #studentInfo .info { flex: 1; }
+  #studentInfo .info div { font-size: 13px; margin-bottom: 3px; }
+  #studentInfo .info b { color: #7ee787; }
+  .alert {
+    padding: 10px; border-radius: 8px; margin-top: 8px;
+    font-size: 13px;
+  }
+  .alert-warn { background: rgba(255,193,7,0.2); color: #ffc107; }
+  .alert-err { background: rgba(233,69,96,0.2); color: #e94560; }
+  .alert-ok { background: rgba(76,175,80,0.2); color: #7ee787; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-top: 8px; }
+  .check input { width: auto; }
+</style>
+</head>
+<body>
+
+<h1>📢 Hoca Yoklama</h1>
+
+<div class="card">
+  <label>Ders Seç</label>
+  <select id="courseSelect"></select>
+  <label style="margin-top:10px;">Hafta (1-14)</label>
+  <select id="weekSelect"></select>
+</div>
+
+<div class="card">
+  <div class="code-sub">Güncel Kod</div>
+  <div id="currentCode" class="big-code">----</div>
+  <div class="code-sub" id="nextCodeIn">Yayın bekleniyor</div>
+  <div class="row" style="margin-top:12px;">
+    <button id="startBroadcast" class="btn-primary">Yayını Başlat</button>
+    <button id="stopBroadcast" class="btn-stop">Durdur</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="check">
+    <input type="checkbox" id="autoCam" checked>
+    <label for="autoCam" style="margin:0;">Otomatik Kamera (yayınla birlikte aç/kapa)</label>
+  </div>
+  <button id="camBtn" class="btn-secondary">Kamerayı Aç</button>
+  <div id="scanWrap">
+    <video id="video" playsinline muted></video>
+    <canvas id="canvas" style="display:none;"></canvas>
+  </div>
+  <div id="scanMsg"></div>
+</div>
+
+<div class="card">
+  <a href="./report.html" style="color:#7ee787;text-decoration:none;font-weight:600;">📊 Rapor Ekranına Git →</a>
+</div>
+
+<div id="studentInfo" class="card">
+  <div style="display:flex;align-items:flex-start;">
+    <img id="studentPhoto" src="" alt="">
+    <div class="info" id="studentInfoText"></div>
+  </div>
+</div>
+
+<div id="feedback"></div>
+
+<script>
+// ================== STATE ==================
+const LS_ATT_KEY = 'attendance_v1';
+const state = {
+  courses: [],
+  students: [],
+  currentCourseCode: null,
+  currentWeek: 1,
+  currentCode: null,
+  broadcastTimer: null,
+  countdownTimer: null,
+  nextCodeAt: 0,
+  audioCtx: null,
+  cameraOn: false,
+  scanRAF: null,
+  video: document.getElementById('video'),
+  scanning: false
+};
+
+// ================== SES (DTMF) ==================
+const DTMF = {
+  '1': [697,1209], '2': [697,1336], '3': [697,1477],
+  '4': [770,1209], '5': [770,1336], '6': [770,1477],
+  '7': [852,1209], '8': [852,1336], '9': [852,1477],
+  '0': [941,1336]
+};
+const TONE_MS = 650;
+const SILENCE_MS = 350;
+
+function playDigit(ctx, digit, startTime) {
+  const [f1, f2] = DTMF[digit];
+  const g1 = ctx.createGain(); const g2 = ctx.createGain();
+  const o1 = ctx.createOscillator(); const o2 = ctx.createOscillator();
+  o1.frequency.value = f1; o2.frequency.value = f2;
+  o1.type = 'sine'; o2.type = 'sine';
+  const now = startTime;
+  const end = now + TONE_MS/1000;
+  g1.gain.setValueAtTime(0, now);
+  g1.gain.linearRampToValueAtTime(0.25, now + 0.02);
+  g1.gain.setValueAtTime(0.25, end - 0.02);
+  g1.gain.linearRampToValueAtTime(0, end);
+  g2.gain.setValueAtTime(0, now);
+  g2.gain.linearRampToValueAtTime(0.25, now + 0.02);
+  g2.gain.setValueAtTime(0.25, end - 0.02);
+  g2.gain.linearRampToValueAtTime(0, end);
+  o1.connect(g1).connect(ctx.destination);
+  o2.connect(g2).connect(ctx.destination);
+  o1.start(now); o2.start(now);
+  o1.stop(end); o2.stop(end);
+  return end; // bitiş zamanı
+}
+
+function playCode(ctx, code) {
+  let t = ctx.currentTime + 0.1;
+  for (const d of code) {
+    t = playDigit(ctx, d, t);
+    t += SILENCE_MS/1000;
+  }
+  return t;
+}
+
+// ================== UI ==================
+const courseSelect = document.getElementById('courseSelect');
+const weekSelect = document.getElementById('weekSelect');
+const currentCodeEl = document.getElementById('currentCode');
+const nextCodeInEl = document.getElementById('nextCodeIn');
+const startBroadcastBtn = document.getElementById('startBroadcast');
+const stopBroadcastBtn = document.getElementById('stopBroadcast');
+const camBtn = document.getElementById('camBtn');
+const autoCam = document.getElementById('autoCam');
+const studentInfoEl = document.getElementById('studentInfo');
+const studentPhoto = document.getElementById('studentPhoto');
+const studentInfoText = document.getElementById('studentInfoText');
+const feedbackEl = document.getElementById('feedback');
+const video = state.video;
+
+// Hafta listesi
+for (let i = 1; i <= 14; i++) {
+  const o = document.createElement('option');
+  o.value = i; o.textContent = `${i}. Hafta`;
+  weekSelect.appendChild(o);
+}
+weekSelect.value = 1;
+
+// Yükle
+async function loadData() {
+  const [c, s] = await Promise.all([
+    fetch('./courses.json').then(r=>r.json()),
+    fetch('./students.json').then(r=>r.json())
+  ]);
+  state.courses = c; state.students = s;
+  courseSelect.innerHTML = '';
+  c.forEach(co => {
+    const o = document.createElement('option');
+    o.value = co.kod; o.textContent = `${co.kod} - ${co.ad}`;
+    courseSelect.appendChild(o);
+  });
+  if (c.length) {
+    state.currentCourseCode = c[0].kod;
+    courseSelect.value = c[0].kod;
+  }
+}
+loadData();
+
+courseSelect.addEventListener('change', () => {
+  state.currentCourseCode = courseSelect.value;
+});
+weekSelect.addEventListener('change', () => {
+  state.currentWeek = parseInt(weekSelect.value, 10);
+});
+
+// ================== YOKLAMA STORAGE ==================
+function getAttendance() {
+  try { return JSON.parse(localStorage.getItem(LS_ATT_KEY) || '{}'); }
+  catch { return {}; }
+}
+function saveAttendance(a) { localStorage.setItem(LS_ATT_KEY, JSON.stringify(a)); }
+
+function recordAttendance(courseCode, studentNo, week) {
+  const all = getAttendance();
+  if (!all[courseCode]) all[courseCode] = {};
+  if (!all[courseCode][studentNo]) all[courseCode][studentNo] = {};
+  const already = !!all[courseCode][studentNo][week];
+  if (!already) {
+    all[courseCode][studentNo][week] = Date.now();
+    saveAttendance(all);
+  }
+  return already;
+}
+
+// ================== BROADCAST ==================
+function generate4Digit() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+function startBroadcast() {
+  if (state.broadcastTimer) return;
+  if (!state.audioCtx) state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  state.audioCtx.resume();
+  // Otomatik kamera açılışı
+  if (autoCam.checked && !state.cameraOn) openCamera();
+  emitNextCode();
+  state.broadcastTimer = setInterval(emitNextCode, 14000); // 14 sn'de bir
+  startBroadcastBtn.disabled = true;
+  stopBroadcastBtn.disabled = false;
+}
+
+function stopBroadcast() {
+  if (state.broadcastTimer) clearInterval(state.broadcastTimer);
+  state.broadcastTimer = null;
+  if (state.countdownTimer) clearInterval(state.countdownTimer);
+  state.countdownTimer = null;
+  currentCodeEl.textContent = '----';
+  nextCodeInEl.textContent = 'Yayın durduruldu';
+  startBroadcastBtn.disabled = false;
+  stopBroadcastBtn.disabled = true;
+  closeCameraIfAuto();
+}
+
+function emitNextCode() {
+  if (!state.audioCtx) return;
+  const code = generate4Digit();
+  state.currentCode = code;
+  currentCodeEl.textContent = code;
+  playCode(state.audioCtx, code);
+  // Geri sayım
+  state.nextCodeAt = Date.now() + 14000;
+  if (state.countdownTimer) clearInterval(state.countdownTimer);
+  state.countdownTimer = setInterval(() => {
+    const left = Math.max(0, Math.ceil((state.nextCodeAt - Date.now())/1000));
+    nextCodeInEl.textContent = `Yeni kod: ${left} sn sonra`;
+  }, 250);
+}
+
+startBroadcastBtn.addEventListener('click', startBroadcast);
+stopBroadcastBtn.addEventListener('click', stopBroadcast);
+stopBroadcastBtn.disabled = true;
+
+// ================== KAMERA / QR ==================
+async function openCamera() {
+  if (state.cameraOn) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' }, audio: false
+    });
+    video.srcObject = stream;
+    video.style.display = 'block';
+    await video.play();
+    state.cameraOn = true;
+    camBtn.textContent = 'Kamerayı Kapat';
+    camBtn.className = 'btn-stop';
+    startScan();
+  } catch (e) {
+    showScanMsg('Kamera erişimi reddedildi: ' + e.message, 'err');
+  }
+}
+
+function closeCamera() {
+  if (!state.cameraOn) return;
+  const stream = video.srcObject;
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  video.srcObject = null;
+  video.style.display = 'none';
+  state.cameraOn = false;
+  camBtn.textContent = 'Kamerayı Aç';
+  camBtn.className = 'btn-secondary';
+  if (state.scanRAF) cancelAnimationFrame(state.scanRAF);
+  state.scanRAF = null;
+}
+
+function closeCameraIfAuto() {
+  if (autoCam.checked && state.cameraOn) closeCamera();
+}
+
+camBtn.addEventListener('click', () => {
+  if (state.cameraOn) closeCamera(); else openCamera();
+});
+
+function startScan() {
+  if (state.scanRAF) cancelAnimationFrame(state.scanRAF);
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d', {

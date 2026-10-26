@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Öğrenci - Sesli QR Yoklama</title>
+<link rel="manifest" href="./manifest-student.json">
+<meta name="theme-color" content="#0f3460">
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; font-family: system-ui, -apple-system, sans-serif;
+    background: linear-gradient(160deg, #0f3460, #16213e);
+    color: #fff; min-height: 100vh; padding: 16px;
+  }
+  h1 { font-size: 20px; margin: 0 0 8px; text-align: center; }
+  .sub { text-align: center; font-size: 12px; opacity: 0.7; margin-bottom: 16px; }
+  .card {
+    background: rgba(255,255,255,0.08); border-radius: 12px;
+    padding: 16px; margin-bottom: 12px; backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  label { display: block; font-size: 13px; margin-bottom: 6px; opacity: 0.9; }
+  input, select {
+    width: 100%; padding: 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2);
+    background: rgba(0,0,0,0.3); color: #fff; font-size: 16px;
+  }
+  button {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    margin-top: 10px; transition: opacity .2s;
+  }
+  button:active { opacity: 0.7; }
+  .btn-primary { background: #e94560; color: #fff; }
+  .btn-secondary { background: rgba(255,255,255,0.15); color: #fff; }
+  .btn-danger { background: #c0392b; color: #fff; }
+  #qrContainer {
+    background: #fff; padding: 12px; border-radius: 12px;
+    display: flex; justify-content: center; align-items: center;
+    min-height: 240px; min-width: 240px;
+  }
+  #qrContainer canvas, #qrContainer img { display: block; }
+  .big-code {
+    font-size: 42px; font-weight: 800; letter-spacing: 8px;
+    text-align: center; color: #e94560; font-family: 'Courier New', monospace;
+    padding: 8px 0;
+  }
+  .status { text-align: center; font-size: 13px; padding: 8px; border-radius: 8px; }
+  .status.listening { background: rgba(76, 175, 80, 0.2); color: #7ee787; }
+  .status.idle { background: rgba(255, 193, 7, 0.15); color: #ffc107; }
+  .status.error { background: rgba(233, 69, 96, 0.2); color: #e94560; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  .pulse { animation: pulse 1.4s infinite; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  @keyframes pulse { 0%,100% { transform: scale(0.8); opacity: 0.5; } 50% { transform: scale(1.2); opacity: 1; } }
+</style>
+</head>
+<body>
+
+<h1>🎤 Öğrenci Yoklama</h1>
+<div class="sub">Hoca sesini dinle → QR otomatik güncellenecek</div>
+
+<div class="card">
+  <label>Öğrenci Numarası</label>
+  <input id="studentNo" type="text" inputmode="numeric" placeholder="Örn: 2024001" autocomplete="off">
+</div>
+
+<div class="card">
+  <div id="status" class="status idle">Mikrofon bekleniyor…</div>
+  <div id="qrContainer" style="margin-top:12px;">
+    <div style="color:#666;font-size:13px;">Henüz kod alınmadı</div>
+  </div>
+  <div id="lastCode" class="big-code">----</div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <button id="startBtn" class="btn-primary">Dinlemeyi Başlat</button>
+    <button id="stopBtn" class="btn-danger">Durdur</button>
+  </div>
+</div>
+
+<div class="card">
+  <label>Manuel Kod Girişi (Fallback)</label>
+  <input id="manualCode" type="text" inputmode="numeric" maxlength="4" placeholder="4 haneli kod">
+  <button id="manualBtn" class="btn-secondary">Kodu Uygula</button>
+</div>
+
+<script>
+// ================== DURUM ==================
+const state = {
+  stream: null,
+  audioCtx: null,
+  analyser: null,
+  running: false,
+  currentCode: null,
+  lastCompletedCode: null,
+  lastQrContent: null,
+  buffer: [],
+  bufferCode: '',
+  silentFrames: 0,
+  qr: null,
+  studentNo: localStorage.getItem('studentNo') || ''
+};
+
+// DTMF frekansları
+const DTMF = {
+  '1': [697,1209], '2': [697,1336], '3': [697,1477],
+  '4': [770,1209], '5': [770,1336], '6': [770,1477],
+  '7': [852,1209], '8': [852,1336], '9': [852,1477],
+  '0': [941,1336]
+};
+
+// ---- Goertzel algoritması ----
+function goertzel(buffer, sampleRate, targetFreq) {
+  const k = Math.round((buffer.length * targetFreq) / sampleRate);
+  const w = (2 * Math.PI * k) / buffer.length;
+  const cosw = Math.cos(w);
+  const coeff = 2 * cosw;
+  let q0 = 0, q1 = 0, q2 = 0;
+  for (let i = 0; i < buffer.length; i++) {
+    q0 = coeff * q1 - q2 + buffer[i];
+    q2 = q1; q1 = q0;
+  }
+  return q1*q1 + q2*q2 - coeff*q1*q2;
+}
+
+function detectDtmf(samples, sampleRate) {
+  let best = null, bestVal = 0;
+  for (const digit in DTMF) {
+    const [f1, f2] = DTMF[digit];
+    const v1 = goertzel(samples, sampleRate, f1);
+    const v2 = goertzel(samples, sampleRate, f2);
+    const val = Math.min(v1, v2);
+    if (val > bestVal) { bestVal = val; best = digit; }
+  }
+  return { digit: best, power: bestVal };
+}
+
+// ================== UI ==================
+const qrContainer = document.getElementById('qrContainer');
+const statusEl = document.getElementById('status');
+const lastCodeEl = document.getElementById('lastCode');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const manualCodeInput = document.getElementById('manualCode');
+const manualBtn = document.getElementById('manualBtn');
+const studentNoInput = document.getElementById('studentNo');
+
+studentNoInput.value = state.studentNo;
+studentNoInput.addEventListener('input', () => {
+  state.studentNo = studentNoInput.value.trim();
+  localStorage.setItem('studentNo', state.studentNo);
+});
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = 'status ' + cls;
+}
+
+// ================== QR ==================
+function makeQrContent(code) {
+  // Format: NO:CODE
+  return `${state.studentNo}:${code}`;
+}
+
+function renderQr(code) {
+  const content = makeQrContent(code);
+  if (!state.studentNo) {
+    setStatus('Lütfen önce öğrenci numaranızı girin', 'error');
+    return;
+  }
+  if (content === state.lastQrContent) return;
+  state.lastQrContent = content;
+  qrContainer.innerHTML = '';
+  if (state.qr) { state.qr.clear(); state.qr = null; }
+  state.qr = new QRCode(qrContainer, {
+    text: content,
+    width: 220, height: 220,
+    colorDark: "#000", colorLight: "#fff",
+    correctLevel: QRCode.CorrectLevel.M
+  });
+  lastCodeEl.textContent = code;
+  setStatus(`Kod alındı: ${code} — Dinleniyor…`, 'listening');
+}
+
+// ================== Mikrofon / Dinleme ==================
+async function startListening() {
+  if (state.running) return;
+  if (!state.studentNo) {
+    setStatus('Lütfen önce öğrenci numaranızı girin', 'error');
+    return;
+  }
+  try {
+    state.stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+  } catch (e) {
+    setStatus('Mikrofon erişimi reddedildi: ' + e.message, 'error');
+    return;
+  }
+
+  state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const src = state.audioCtx.createMediaStreamSource(state.stream);
+  state.analyser = state.audioCtx.createAnalyser();
+  state.analyser.fftSize = 2048;
+  src.connect(state.analyser);
+
+  state.running = true;
+  state.buffer = [];
+  state.bufferCode = '';
+  state.silentFrames = 0;
+  startBtn.disabled = true;
+  setStatus('Dinleniyor… (hoca ses bekleniyor)', 'listening');
+  loop();
+}
+
+function loop() {
+  if (!state.running) return;
+  const analyser = state.analyser;
+  const buf = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(buf);
+
+  // RMS kontrolü
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) sum += buf[i]*buf[i];
+  const rms = Math.sqrt(sum / buf.length);
+
+  const SR = state.audioCtx.sampleRate;
+  const now = performance.now();
+
+  if (rms > 0.01) {
+    // Sinyal var → DTMF tespiti
+    const { digit, power } = detectDtmf(buf, SR);
+    const totalPower = buf.reduce((a,b)=>a+b*b,0);
+    if (power > totalPower * 0.15 && digit) {
+      // Yeni karakter
+      if (state.bufferCode.length === 0 || now - state.lastDigitTime > 250) {
+        state.bufferCode += digit;
+        state.lastDigitTime = now;
+        setStatus(`Algılanan kod: ${state.bufferCode}…`, 'listening');
+        lastCodeEl.textContent = state.bufferCode.padEnd(4, '-');
+        if (state.bufferCode.length === 4) {
+          completeCode(state.bufferCode);
+          state.bufferCode = '';
+        }
+      }
+      state.silentFrames = 0;
+    } else {
+      state.silentFrames++;
+    }
+  } else {
+    state.silentFrames++;
+    // Sessizlik 400ms'den uzun sürdüyse ve yarım kod varsa sıfırla
+    if (state.silentFrames > 20 && state.bufferCode.length > 0 && state.bufferCode.length < 4) {
+      state.bufferCode = '';
+      lastCodeEl.textContent = '----';
+      setStatus('Yarım kod sıfırlandı, bekleniyor…', 'idle');
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+
+function completeCode(code) {
+  if (code === state.lastCompletedCode) return;
+  state.lastCompletedCode = code;
+  state.currentCode = code;
+  renderQr(code);
+}
+
+function stopListening() {
+  state.running = false;
+  if (state.stream) { state.stream.getTracks().forEach(t => t.stop()); state.stream = null; }
+  if (state.audioCtx) { state.audioCtx.close(); state.audioCtx = null; }
+  startBtn.disabled = false;
+  setStatus('Durduruldu', 'idle');
+}
+
+// Manuel kod
+manualBtn.addEventListener('click', () => {
+  const v = manualCodeInput.value.trim();
+  if (!/^\d{4}$/.test(v)) {
+    setStatus('4 haneli sayı girin', 'error');
+    return;
+  }
+  if (!state.studentNo) { setStatus('Öğrenci no girin', 'error'); return; }
+  completeCode(v);
+  manualCodeInput.value = '';
+});
+
+startBtn.addEventListener('click', startListening);
+stopBtn.addEventListener('click', stopListening);
+
+// SW kayıt
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(()=>{});
+}
+</script>
+</body>
+</html>

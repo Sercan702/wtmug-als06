@@ -1,0 +1,22 @@
+[
+  {
+    "kod": "WTM101",
+    "ad": "Web Programlama I",
+    "ogrenciler": ["2024001", "2024002", "2024004"]
+  },
+  {
+    "kod": "WTM102",
+    "ad": "Veritabanı Yönetimi",
+    "ogrenciler": ["2024001", "2024003", "2024005"]
+  },
+  {
+    "kod": "WTM201",
+    "ad": "Mobil Uygulama Geliştirme",
+    "ogrenciler": ["2024001", "2024002", "2024003", "2024004", "2024005"]
+  },
+  {
+    "kod": "WTM202",
+    "ad": "Nesne Yönelimli Programlama",
+    "ogrenciler": ["2024002", "2024003", "2024004"]
+  }
+]
